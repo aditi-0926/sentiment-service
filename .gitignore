@@ -3,4 +3,3 @@ __pycache__/
 *.pyc
 models/checkpoint/
 .pytest_cache/
-metrics.json
