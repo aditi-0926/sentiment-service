@@ -1,8 +1,8 @@
 import json
 import os
 
-MIN_ACCURACY = 0.60
-MIN_F1 = 0.55
+MIN_ACCURACY = 0.65
+MIN_F1 = 0.63
 
 def test_model_meets_quality_bar():
     assert os.path.exists("metrics.json"), "metrics.json not found — run training first"
