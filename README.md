@@ -1,15 +1,17 @@
 # Sentiment Service
 
-A real-time sentiment classification API powered by a fine-tuned DistilBERT model, containerized with Docker, and deployed through a CI/CD pipeline with an automated model-quality gate.
+A real-time sentiment classification API powered by a fine-tuned RoBERTa model, containerized with Docker, and deployed through a CI/CD pipeline with an automated model-quality gate.
 
 ![CI](https://github.com/aditi-0926/sentiment-service/actions/workflows/ci.yml/badge.svg)
 ![CD](https://github.com/aditi-0926/sentiment-service/actions/workflows/cd.yml/badge.svg)
 
 ## Overview
 
-This project treats model performance as a first-class CI check, not just an afterthought. Every push runs automated tests **and** an evaluation gate that blocks deployment if the model's accuracy or F1 score falls below a defined threshold — the same way a broken unit test would block a bad code change.
+This project treats model performance as a first-class CI check, not an afterthought. Every push runs automated tests **and** an evaluation gate that blocks deployment if the model's accuracy or F1 score falls below a defined threshold — the same way a broken unit test would block a bad code change.
 
-**Pipeline:** `Fine-tune DistilBERT → Serve via FastAPI → Test → Quality Gate → Docker Build → Push to GHCR`
+**Pipeline:** `Fine-tune RoBERTa → Serve via FastAPI → Test → Quality Gate → Docker Build → Push to GHCR`
+
+The model was iterated on directly through this pipeline: an initial DistilBERT baseline was retrained as RoBERTa on the full dataset, and the improved model only reached production because it passed the same automated quality gate as every other change.
 
 ## Architecture
 
@@ -22,7 +24,7 @@ This project treats model performance as a first-class CI check, not just an aft
                          ▼
                 ┌─────────────────┐
                 │  Fine-tune       │
-                │  DistilBERT      │
+                │  RoBERTa         │
                 │  (training/)     │
                 └────────┬─────────┘
                          │
@@ -56,21 +58,25 @@ This project treats model performance as a first-class CI check, not just an aft
 
 | | |
 |---|---|
-| Base model | `distilbert-base-uncased` |
+| Base model | `roberta-base` |
 | Task | 3-class sentiment classification (negative / neutral / positive) |
-| Dataset | [`cardiffnlp/tweet_eval`](https://huggingface.co/datasets/cardiffnlp/tweet_eval) (sentiment config) |
+| Dataset | [`cardiffnlp/tweet_eval`](https://huggingface.co/datasets/cardiffnlp/tweet_eval) (sentiment config, full training set) |
 | Framework | Hugging Face `transformers` + `Trainer` |
 
-### Current metrics
+### Final test-set metrics
 
 | Metric | Score |
 |---|---|
-| Accuracy | 0.660 |
-| F1 (macro) | 0.654 |
+| Accuracy | 71.9% |
+| F1 (macro) | 71.7% |
 
-These are checked automatically against `MIN_ACCURACY = 0.60` and `MIN_F1 = 0.55` in [`tests/test_eval_gate.py`](tests/test_eval_gate.py) — the build fails if a retrained model regresses below these thresholds.
+These are checked automatically against `MIN_ACCURACY = 0.65` and `MIN_F1 = 0.63` in [`tests/test_eval_gate.py`](tests/test_eval_gate.py) — the build fails if a retrained model regresses below these thresholds.
 
-> Note: this model was trained on a subset of the training data for fast iteration. A full-dataset run (see `training/train.py`) typically pushes accuracy into the 72–76% range.
+### How this compares
+[TweetEval](https://arxiv.org/abs/2010.12421), the paper that introduced this benchmark, reports that even `twitter-roberta-base-sentiment` — a model pretrained on 58M tweets specifically for this task — tops out around 72–73% accuracy. This model, a general-purpose `roberta-base` fine-tune, lands in the same range, which suggests the task's noisy, ambiguous nature (sarcasm, slang, short informal text) is closer to the practical ceiling than the model architecture is.
+
+### Model selection: catching overfitting mid-training
+Validation loss bottomed out around epoch 2–3 and began rising by epoch 4, even as accuracy kept climbing slightly — an early sign of overfitting. `load_best_model_at_end=True` with `metric_for_best_model="f1"` ensured the checkpoint with the best-generalizing validation F1 was retained rather than the final epoch, and the reported metrics come from a held-out test set that had no influence on checkpoint selection.
 
 ## Project structure
 
@@ -110,6 +116,8 @@ python training/train.py
 ```
 This writes `models/final/` (weights + tokenizer) and `metrics.json`.
 
+> Training the full dataset on CPU is slow — a GPU runtime (e.g. Google Colab) is recommended.
+
 ### 3. Run the API
 ```bash
 uvicorn app.main:app --reload --port 8000
@@ -122,7 +130,7 @@ curl -X POST http://localhost:8000/predict \
   -d "{\"text\": \"I absolutely love this!\"}"
 ```
 ```json
-{"label": "positive", "confidence": 0.9886}
+{"label": "positive", "confidence": 0.9954}
 ```
 
 ## Running with Docker
@@ -160,7 +168,7 @@ docker run -p 8000:8000 ghcr.io/aditi-0926/sentiment-service:latest
 
 **CI** (`.github/workflows/ci.yml`) runs on every push and pull request to `main`:
 1. Checks out code (with Git LFS)
-2. Installs dependencies
+2. Installs CPU-only torch, then the rest of the dependencies
 3. Lints with `ruff`
 4. Runs API tests
 5. Runs the **quality gate** — fails the build if `metrics.json` accuracy/F1 fall below threshold
@@ -183,7 +191,7 @@ docker run -p 8000:8000 ghcr.io/aditi-0926/sentiment-service:latest
 
 ## Future improvements
 
-- [ ] Full-dataset training run (GPU) for a stronger baseline model
+- [ ] Try a tweet-pretrained base model (e.g. `cardiffnlp/twitter-roberta-base`) to test whether domain-specific pretraining closes the remaining gap to the published ceiling
 - [ ] MLflow or Weights & Biases for experiment tracking across training runs
 - [ ] Live deployment (Render / Fly.io) with a public demo endpoint
 - [ ] Load testing (`locust` / `k6`) for the `/predict` endpoint
